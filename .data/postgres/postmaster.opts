@@ -1,1 +1,1 @@
-/usr/lib/postgresql/18/bin/postgres "-D" ".data/postgres" "-h" "127.0.0.1" "-p" "55432" "-k" "/home/ubuntu/Documents/AiMl/AddisAI/.data/pgsocket"
+/usr/lib/postgresql/18/bin/postgres "-D" ".data/postgres" "-h" "127.0.0.1" "-p" "55432" "-k" "/home/ubuntu/Documents/AiMl/AddisAI/.data/pgsocket" "-c" "shared_memory_type=mmap"

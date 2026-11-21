@@ -1,7 +1,12 @@
 .env
 .venv/
+.venv311/
+.setup-venv/
+.python/
 venv/
 __pycache__/
 *.py[cod]
 node_modules/
 dist/
+.data/
+chroma_db/
