@@ -54,6 +54,10 @@ class LookupArgs(BaseModel):
     order_number: str = Field(description='The exact order number stated by the customer')
 
 
+class MyProfileArgs(BaseModel):
+    field: str = Field(description='The customer profile field requested: full_name, email, phone, or preferred_language')
+
+
 class TicketArgs(BaseModel):
     issue_summary: str = Field(description='Concise support issue summary')
     priority: str = Field(default='normal', description='One of low, normal, high, urgent')
@@ -70,6 +74,15 @@ class EscalationArgs(BaseModel):
 
 def make_tools(db: Session, user: User, chat_session: ChatSession) -> list[StructuredTool]:
     results: list[dict] = []
+
+    def lookup_my_profile(field: str = 'full_name') -> dict:
+        allowed = {'full_name', 'email', 'phone', 'preferred_language'}
+        if field not in allowed:
+            return {'found': False, 'reason': 'That profile field is unavailable.'}
+        value = getattr(user, field)
+        result = {'found': value is not None, 'field': field, 'value': value}
+        results.append({'tool': 'lookup_my_profile', 'result': result})
+        return result
 
     def lookup_user_orders(order_number: str) -> dict:
         record = db.scalar(select(Order).where(Order.order_number == order_number.strip().upper(), Order.user_id == user.id))
@@ -123,6 +136,7 @@ def make_tools(db: Session, user: User, chat_session: ChatSession) -> list[Struc
         return result
 
     return [
+        StructuredTool.from_function(lookup_my_profile, name='lookup_my_profile', description='Look up the current customer’s own registered profile field. The lookup is scoped to the customer profile attached to this chat; never request another customer ID.', args_schema=MyProfileArgs),
         StructuredTool.from_function(lookup_user_orders, name='lookup_user_orders', description='Look up a customer order by exact order number. Only returns orders belonging to the signed-in user.', args_schema=LookupArgs),
         StructuredTool.from_function(create_support_ticket, name='create_support_ticket', description='Create a support ticket for an issue the customer wants staff to resolve.', args_schema=TicketArgs),
         StructuredTool.from_function(update_user_profile, name='update_user_profile', description='Update a user profile field only when the customer clearly asks to change it.', args_schema=ProfileArgs),
@@ -135,12 +149,31 @@ def orchestrate_tools(db: Session, user: User, chat_session: ChatSession, messag
     tools = make_tools(db, user, chat_session)
     collected: list[dict] = []
     escalation_summary = None
+    lowered = message.casefold()
+    profile_intent = re.search(r'\b(my|mine|registered|registration|profile|account)\b', lowered) and re.search(
+        r'\b(name|email|phone|number|language|profile|account|details|information|info)\b', lowered
+    )
+    if re.search(r'\bmy\s+(?:name|email|phone|number)\s+is\b', lowered):
+        profile_intent = False
+    if re.search(r'\b(change|update|edit|correct|replace|set)\b', lowered):
+        profile_intent = False
+    if profile_intent:
+        field = 'full_name'
+        if re.search(r'\b(email|e-mail)\b', lowered):
+            field = 'email'
+        elif re.search(r'\b(phone|number)\b', lowered):
+            field = 'phone'
+        elif re.search(r'\b(language)\b', lowered):
+            field = 'preferred_language'
+        result = tools[0].invoke({'field': field})
+        collected.append({'tool': 'lookup_my_profile', 'result': result})
+        return collected, None
     if client is not None:
         try:
             tool_map = {tool.name: tool for tool in tools}
             conversation: list[Any] = [
                 SystemMessage(content=("You are a customer-support action orchestrator. Decide whether an allowed database tool is needed. "
-                    "Never invent data or execute profile changes unless explicitly requested. Escalate explicit human requests, suspected fraud, "
+                    "The customer is already attached to this conversation. For requests about their own registered name or profile, call lookup_my_profile; it reads only this conversation's customer record. Never claim you lack database access when this tool can answer. Never invent data or execute profile changes unless explicitly requested. Escalate explicit human requests, suspected fraud, "
                     "legal threats, serious safety concerns, or an unresolved complaint. Use exact order numbers only. "
                     "Ground any policy decision in this context:\n" + (context or 'No policy context found.')))
             ]
@@ -173,12 +206,12 @@ def orchestrate_tools(db: Session, user: User, chat_session: ChatSession, messag
 
     order = re.search(r'\bADDIS-\d{4,}\b', message, re.I)
     if order and any(term in message.lower() for term in ('order', 'track', 'status', 'delivery', 'where')):
-        result = tools[0].invoke({'order_number': order.group(0)})
+        result = next(tool for tool in tools if tool.name == 'lookup_user_orders').invoke({'order_number': order.group(0)})
         collected.append({'tool': 'lookup_user_orders', 'result': result})
     lowered = message.lower()
     if any(term in lowered for term in ('human', 'real person', 'representative', 'agent', 'fraud', 'stolen', 'lawyer', 'lawsuit')) or any(term in message for term in ('ሰው ጋር', 'ሰው አነጋግር')):
         summary = f"Customer requested help with: {message[:600]}"
-        result = tools[3].invoke({'reason_summary': summary})
+        result = next(tool for tool in tools if tool.name == 'escalate_to_human').invoke({'reason_summary': summary})
         collected.append({'tool': 'escalate_to_human', 'result': result})
         escalation_summary = summary
     return collected, escalation_summary

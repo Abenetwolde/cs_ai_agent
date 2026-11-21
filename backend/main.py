@@ -124,6 +124,25 @@ def deterministic_fallback(message: str, language: str, context: str, tool_resul
         }[language]
     for item in tool_results:
         result = item.get('result') or {}
+        if item.get('tool') == 'lookup_my_profile':
+            if not result.get('found'):
+                return {
+                    'en': 'I could not find that information on your support profile.',
+                    'am': 'ያንን መረጃ በድጋፍ መገለጫዎ ላይ ማግኘት አልቻልኩም።',
+                    'om': 'Odeeffannoo kana piroofaayilii deeggarsaa keessan keessatti hin arganne.',
+                    'ti': 'እዚ ሓበሬታ እዚ ኣብ መገለጺ ደገፍኩም ኣይረኸብክዎን።',
+                }[language]
+            if result.get('field') == 'full_name':
+                return {
+                    'en': f"The name on your support profile is {result['value']}.",
+                    'am': f"በድጋፍ መገለጫዎ ላይ የተመዘገበው ስም {result['value']} ነው።",
+                    'om': f"Maqaan piroofaayilii deeggarsaa keessan irratti galmaa'e {result['value']} dha.",
+                    'ti': f"ኣብ መገለጺ ደገፍኩም ዝተመዝገበ ስም {result['value']} እዩ።",
+                }[language]
+            labels = {'email': 'email address', 'phone': 'phone number', 'preferred_language': 'preferred language'}
+            label = labels.get(result.get('field'), 'profile information')
+            value = result.get('value') or 'not provided'
+            return f"Your {label} on the support profile is {value}."
         if item.get('tool') == 'lookup_user_orders':
             if result.get('found'):
                 return f"Order {result['order_number']} is {result['status']}. Estimated delivery: {result.get('estimated_delivery') or 'not available yet'}. Carrier: {result.get('carrier') or 'not assigned'} ."
@@ -249,8 +268,13 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
     sdk_language = body.language if body.language in {'am', 'om', 'ti'} else 'am'
     reply = None
     active_model = 'local-fallback'
+    profile_result = next((entry for entry in tool_results if entry.get('tool') == 'lookup_my_profile'), None)
+    if profile_result:
+        # Give this chat's scoped database result directly so the language model
+        # cannot refuse the lookup or fabricate account details.
+        reply = deterministic_fallback(body.message, body.language, context, tool_results, False)
     sdk = addis_client()
-    if sdk is not None:
+    if not reply and sdk is not None:
         addis_history = [{'role': m['role'], 'content': m['content']} for m in history[-14:]]
         addis_history.append({'role': 'user', 'content': body.message})
         try:
