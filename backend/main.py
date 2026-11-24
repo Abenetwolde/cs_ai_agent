@@ -1,6 +1,12 @@
 import base64
+import hashlib
+import hmac
+import json
 import logging
 import os
+import secrets
+import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,18 +16,19 @@ from addisai import AddisAI
 from alembic import command
 from alembic.config import Config
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select, text
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.orm import Session
 
 ROOT = Path(__file__).parent
 load_dotenv(ROOT / '.env', override=True)
 from backend.agents import gemini_fallback_answer, orchestrate_tools, rewrite_search_query
 from backend.db import SessionLocal, engine, get_db
-from backend.models import Base, ChatMessage, ChatSession, SupportTicket, User
-from backend.rag import ingest_paths, retrieve
+from backend.models import Base, ChatMessage, ChatSession, Order, SupportTicket, User
+from backend.rag import KB_DIR, delete_source, ingest_paths, retrieve
 from backend.seed import seed_demo_data
 
 logger = logging.getLogger('uvicorn.error')
@@ -53,8 +60,94 @@ app.add_middleware(
     allow_origins=os.getenv('FRONTEND_ORIGINS', 'http://localhost:5174').split(','),
     allow_credentials=True,
     allow_methods=['GET', 'POST', 'DELETE'],
-    allow_headers=['Content-Type', 'X-Admin-Token'],
+    allow_headers=['Content-Type', 'Authorization'],
 )
+
+
+_RAG_JOBS: dict[str, dict] = {}
+_RAG_JOBS_LOCK = threading.RLock()
+_RAG_UPLOAD_LOCK = threading.RLock()
+RAG_STAGING_DIR = ROOT.parent / '.data' / 'rag_staging'
+LARGE_RAG_UPLOAD_BYTES = 256 * 1024
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode('ascii').rstrip('=')
+
+
+def _admin_token(email: str) -> str:
+    secret = os.getenv('ADMIN_SESSION_SECRET', '')
+    payload = _b64url(json.dumps({'sub': email, 'exp': int(time.time()) + 43200}, separators=(',', ':')).encode())
+    signature = _b64url(hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest())
+    return f'{payload}.{signature}'
+
+
+def require_admin(authorization: str | None = Header(default=None)) -> str:
+    secret = os.getenv('ADMIN_SESSION_SECRET', '')
+    if not secret or not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(401, 'Admin sign-in required.', headers={'WWW-Authenticate': 'Bearer'})
+    try:
+        payload, signature = authorization[7:].split('.', 1)
+        expected = _b64url(hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest())
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError('invalid signature')
+        decoded = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+        configured_email = os.getenv('ADMIN_EMAIL', '').strip().casefold()
+        if decoded.get('sub', '').casefold() != configured_email or decoded.get('exp', 0) < time.time():
+            raise ValueError('invalid admin session')
+        return configured_email
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(401, 'Admin session expired. Sign in again.', headers={'WWW-Authenticate': 'Bearer'})
+
+
+def _verify_admin_password(password: str) -> bool:
+    encoded = os.getenv('ADMIN_PASSWORD_HASH', '')
+    try:
+        scheme, iterations, salt, digest = encoded.split('$', 3)
+        if scheme != 'pbkdf2_sha256':
+            return False
+        actual = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), int(iterations))
+        return hmac.compare_digest(_b64url(actual), digest)
+    except (ValueError, TypeError):
+        return False
+
+
+def _process_rag_upload(job_id: str, staging_path: Path, destination: Path) -> None:
+    with _RAG_UPLOAD_LOCK:
+        with _RAG_JOBS_LOCK:
+            _RAG_JOBS[job_id]['status'] = 'processing'
+        try:
+            count = ingest_paths([staging_path], source_names={staging_path: destination.name})
+            KB_DIR.mkdir(parents=True, exist_ok=True)
+            os.replace(staging_path, destination)
+            with _RAG_JOBS_LOCK:
+                _RAG_JOBS[job_id].update(status='complete', chunks_indexed=count)
+        except Exception as exc:
+            logger.error('RAG ingestion job failed (type=%s)', type(exc).__name__)
+            staging_path.unlink(missing_ok=True)
+            with _RAG_JOBS_LOCK:
+                _RAG_JOBS[job_id].update(status='failed', error='Indexing failed. Check backend logs and retry the upload.')
+
+
+def _stage_rag_upload(file_name: str, content: bytes, background_tasks: BackgroundTasks):
+    KB_DIR.mkdir(parents=True, exist_ok=True)
+    RAG_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file_name).suffix.lower()
+    job_id = str(uuid.uuid4())
+    staging_path = RAG_STAGING_DIR / f'{job_id}{suffix}'
+    destination = KB_DIR / file_name
+    staging_path.write_bytes(content)
+    with _RAG_JOBS_LOCK:
+        _RAG_JOBS[job_id] = {'id': job_id, 'file_name': file_name, 'status': 'queued', 'chunks_indexed': 0}
+    if len(content) > LARGE_RAG_UPLOAD_BYTES:
+        background_tasks.add_task(_process_rag_upload, job_id, staging_path, destination)
+        return JSONResponse(status_code=202, content={'ok': True, 'job_id': job_id, 'status': 'queued', 'source': file_name})
+    _process_rag_upload(job_id, staging_path, destination)
+    with _RAG_JOBS_LOCK:
+        job = dict(_RAG_JOBS[job_id])
+    if job['status'] == 'failed':
+        raise HTTPException(503, job.get('error', 'Document indexing failed.'))
+    return {'ok': True, 'job_id': job_id, 'status': job['status'], 'source': file_name, 'chunks_indexed': job['chunks_indexed']}
 
 
 class RegisterRequest(BaseModel):
@@ -82,6 +175,11 @@ class SessionRequest(BaseModel):
 class SpeakRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     language: Literal['am', 'om', 'ti']
+
+
+class AdminLoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
 
 
 def public_user(user: User) -> dict:
@@ -166,6 +264,126 @@ def health(db: Session = Depends(get_db)):
     db.execute(text('SELECT 1'))
     return {'ok': True, 'database': True, 'addis_configured': bool(os.getenv('ADDIS_API_KEY')),
             'gemini_configured': bool(os.getenv('GEMINI_API_KEY'))}
+
+
+@app.post('/api/admin/login')
+def admin_login(body: AdminLoginRequest):
+    configured_email = os.getenv('ADMIN_EMAIL', '').strip()
+    if not configured_email or not os.getenv('ADMIN_SESSION_SECRET'):
+        raise HTTPException(503, 'Admin login has not been configured. Run scripts/create_admin_credentials.py.')
+    if not hmac.compare_digest(body.email.strip().casefold(), configured_email.casefold()) or not _verify_admin_password(body.password):
+        raise HTTPException(401, 'Email or password is incorrect.')
+    return {'access_token': _admin_token(configured_email), 'token_type': 'bearer', 'expires_in': 43200,
+            'email': configured_email}
+
+
+@app.get('/api/admin/overview')
+def admin_overview(_: str = Depends(require_admin), db: Session = Depends(get_db)):
+    count = lambda model: db.scalar(select(func.count()).select_from(model)) or 0
+    return {'users': count(User), 'orders': count(Order), 'tickets': count(SupportTicket),
+            'open_tickets': db.scalar(select(func.count()).select_from(SupportTicket).where(SupportTicket.status == 'open')) or 0,
+            'conversations': count(ChatSession), 'escalated_conversations': db.scalar(
+                select(func.count()).select_from(ChatSession).where(ChatSession.status == 'escalated')) or 0}
+
+
+@app.get('/api/admin/users')
+def admin_users(limit: int = 100, _: str = Depends(require_admin), db: Session = Depends(get_db)):
+    limit = max(1, min(limit, 200))
+    order_counts = select(Order.user_id.label('user_id'), func.count(Order.id).label('count')).group_by(Order.user_id).subquery()
+    ticket_counts = select(SupportTicket.user_id.label('user_id'), func.count(SupportTicket.id).label('count')).group_by(SupportTicket.user_id).subquery()
+    session_counts = select(ChatSession.user_id.label('user_id'), func.count(ChatSession.id).label('count')).group_by(ChatSession.user_id).subquery()
+    rows = db.execute(select(User, func.coalesce(order_counts.c.count, 0), func.coalesce(ticket_counts.c.count, 0),
+                            func.coalesce(session_counts.c.count, 0))
+        .outerjoin(order_counts, order_counts.c.user_id == User.id)
+        .outerjoin(ticket_counts, ticket_counts.c.user_id == User.id)
+        .outerjoin(session_counts, session_counts.c.user_id == User.id)
+        .order_by(desc(User.created_at)).limit(limit)).all()
+    return {'users': [{'id': user.id, 'full_name': user.full_name, 'email': user.email, 'phone': user.phone,
+                       'preferred_language': user.preferred_language, 'created_at': user.created_at.isoformat(),
+                       'orders': orders, 'tickets': tickets, 'conversations': sessions}
+                      for user, orders, tickets, sessions in rows]}
+
+
+@app.get('/api/admin/orders')
+def admin_orders(limit: int = 200, _: str = Depends(require_admin), db: Session = Depends(get_db)):
+    rows = db.execute(select(Order, User).join(User, User.id == Order.user_id)
+                      .order_by(desc(Order.updated_at)).limit(max(1, min(limit, 500)))).all()
+    return {'orders': [{'order_number': order.order_number, 'customer': user.full_name, 'email': user.email,
+                        'status': order.status, 'estimated_delivery': order.estimated_delivery.isoformat() if order.estimated_delivery else None,
+                        'carrier': order.carrier, 'items': order.items, 'updated_at': order.updated_at.isoformat()}
+                       for order, user in rows]}
+
+
+@app.get('/api/admin/activity')
+def admin_activity(limit: int = 100, _: str = Depends(require_admin), db: Session = Depends(get_db)):
+    limit = max(1, min(limit, 200))
+    message_rows = db.execute(select(ChatMessage, ChatSession, User).join(ChatSession, ChatSession.id == ChatMessage.session_id)
+        .join(User, User.id == ChatSession.user_id).where(ChatMessage.sender.in_(['user', 'assistant']))
+        .order_by(desc(ChatMessage.created_at)).limit(limit)).all()
+    ticket_rows = db.execute(select(SupportTicket, User).join(User, User.id == SupportTicket.user_id)
+        .order_by(desc(SupportTicket.created_at)).limit(limit)).all()
+    activity = [{'type': 'message', 'at': msg.created_at.isoformat(), 'customer': user.full_name,
+                 'customer_email': user.email, 'session_id': session.id, 'status': session.status,
+                 'speaker': msg.sender, 'summary': msg.content[:400]}
+                for msg, session, user in message_rows]
+    activity.extend({'type': 'ticket', 'at': ticket.created_at.isoformat(), 'customer': user.full_name,
+                     'customer_email': user.email, 'ticket_number': ticket.ticket_number,
+                     'status': ticket.status, 'priority': ticket.priority, 'summary': ticket.issue_summary[:400]}
+                    for ticket, user in ticket_rows)
+    activity.sort(key=lambda item: item['at'], reverse=True)
+    return {'activity': activity[:limit]}
+
+
+@app.get('/api/admin/rag/files')
+def admin_rag_files(_: str = Depends(require_admin)):
+    KB_DIR.mkdir(parents=True, exist_ok=True)
+    files = [{'name': path.name, 'bytes': path.stat().st_size, 'updated_at': path.stat().st_mtime}
+             for path in sorted(KB_DIR.iterdir()) if path.is_file() and path.suffix.lower() in {'.md', '.txt'}]
+    with _RAG_JOBS_LOCK:
+        jobs = [dict(job) for job in _RAG_JOBS.values()]
+    jobs.sort(key=lambda job: job['id'], reverse=True)
+    return {'files': files, 'jobs': jobs[:30]}
+
+
+@app.post('/api/admin/rag/files')
+async def admin_upload_rag_file(file: UploadFile = File(...), background_tasks: BackgroundTasks = None,
+                               _: str = Depends(require_admin)):
+    file_name = Path(file.filename or '').name
+    if not file_name or file_name in {'.', '..'} or Path(file_name).suffix.lower() not in {'.md', '.txt'}:
+        raise HTTPException(415, 'Upload a Markdown or text file.')
+    content = await file.read(20_000_001)
+    if len(content) > 20_000_000:
+        raise HTTPException(413, 'File exceeds the 20 MB limit.')
+    if not content.strip():
+        raise HTTPException(422, 'The knowledge file is empty.')
+    return _stage_rag_upload(file_name, content, background_tasks or BackgroundTasks())
+
+
+@app.get('/api/admin/rag/jobs/{job_id}')
+def admin_rag_job(job_id: str, _: str = Depends(require_admin)):
+    with _RAG_JOBS_LOCK:
+        job = _RAG_JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(404, 'Indexing job not found. Jobs are kept until the backend restarts.')
+        return dict(job)
+
+
+@app.delete('/api/admin/rag/files/{file_name}')
+def admin_delete_rag_file(file_name: str, _: str = Depends(require_admin)):
+    safe_name = Path(file_name).name
+    if safe_name != file_name or Path(safe_name).suffix.lower() not in {'.md', '.txt'}:
+        raise HTTPException(400, 'Invalid knowledge file name.')
+    path = KB_DIR / safe_name
+    if not path.is_file():
+        raise HTTPException(404, 'Knowledge file not found.')
+    try:
+        with _RAG_UPLOAD_LOCK:
+            delete_source(safe_name)
+            path.unlink()
+    except Exception as exc:
+        logger.error('RAG document deletion failed (type=%s)', type(exc).__name__)
+        raise HTTPException(503, 'Could not remove the document from the knowledge index.') from exc
+    return {'ok': True, 'source': safe_name}
 
 
 @app.post('/api/users')
@@ -304,24 +522,17 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
 
 
 @app.post('/api/kb/upload')
-def upload_knowledge(file: UploadFile = File(...), x_admin_token: str | None = Header(default=None), db: Session = Depends(get_db)):
-    expected = os.getenv('KB_ADMIN_TOKEN')
-    if not expected or not x_admin_token or not __import__('hmac').compare_digest(expected, x_admin_token):
-        raise HTTPException(403, 'Knowledge upload is not authorized.')
-    if Path(file.filename or '').suffix.lower() not in {'.md', '.txt'}:
+async def upload_knowledge(file: UploadFile = File(...), background_tasks: BackgroundTasks = None,
+                          _: str = Depends(require_admin)):
+    file_name = Path(file.filename or '').name
+    if not file_name or file_name in {'.', '..'} or Path(file_name).suffix.lower() not in {'.md', '.txt'}:
         raise HTTPException(415, 'Upload a Markdown or text file.')
-    content = file.file.read(2_000_001)
-    if len(content) > 2_000_000:
-        raise HTTPException(413, 'File exceeds the 2 MB limit.')
-    dest = ROOT / 'data' / 'kb' / Path(file.filename).name
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(content)
-    try:
-        count = ingest_paths([dest])
-    except Exception as exc:
-        logger.error('Knowledge ingestion failed (type=%s)', type(exc).__name__)
-        raise HTTPException(503, 'Knowledge file saved, but vector indexing is not ready. Run scripts/ingest_docs.py.') from exc
-    return {'ok': True, 'source': dest.name, 'chunks_indexed': count}
+    content = await file.read(20_000_001)
+    if len(content) > 20_000_000:
+        raise HTTPException(413, 'File exceeds the 20 MB limit.')
+    if not content.strip():
+        raise HTTPException(422, 'The knowledge file is empty.')
+    return _stage_rag_upload(file_name, content, background_tasks or BackgroundTasks())
 
 
 @app.post('/api/transcribe')

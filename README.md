@@ -42,7 +42,17 @@ Open `http://localhost:5174`. Vite proxies `/api` to FastAPI on port `8001`. The
 
 ## Configuration
 
-`backend/.env.example` documents the settings. The local `.env` has a generated PostgreSQL URL (`DATABASE_URL`), model (`GEMINI_MODEL`), Chroma path (`CHROMA_PERSIST_DIR`), embedding model, and a generated knowledge-upload token. Add valid `ADDIS_API_KEY` and `GEMINI_API_KEY` values there. Addis AI handles multilingual customer replies; Gemini performs query rewriting, structured database tools, and fallback response generation. If both providers are unavailable, the API uses a grounded local fallback rather than dropping the conversation.
+`backend/.env.example` documents the settings. The ignored local `.env` contains the generated PostgreSQL URL (`DATABASE_URL`), model settings, Chroma path, and admin authentication secrets. Add valid `ADDIS_API_KEY` and `GEMINI_API_KEY` values there. Addis AI handles multilingual customer replies; Gemini performs query rewriting, structured database tools, and fallback response generation. If both providers are unavailable, the API uses a grounded local fallback rather than dropping the conversation.
+
+The admin console is at `http://localhost:5174/admin`. Create or rotate its local login with:
+
+```sh
+.venv311/bin/python scripts/create_admin_credentials.py
+# To rotate an existing password and invalidate active sessions:
+.venv311/bin/python scripts/create_admin_credentials.py --rotate
+```
+
+The script prints the generated password once and stores only its PBKDF2 hash in `backend/.env`. Restart the backend after creating or rotating credentials.
 
 The PostgreSQL cluster listens on `127.0.0.1:55432` and persists under `.data/postgres`. `bash scripts/start_postgres.sh` starts it after a reboot. To stop it, run:
 
@@ -52,13 +62,15 @@ The PostgreSQL cluster listens on `127.0.0.1:55432` and persists under `.data/po
 
 ## RAG knowledge
 
-Company-approved Markdown and text files belong in `backend/data/kb/`. The multilingual embedding model is `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; Chroma persists in `chroma_db/`. Ingest or refresh documents with:
+Company-approved Markdown and text files belong in `backend/data/kb/`. The multilingual embedding model is `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; Chroma persists in `chroma_db/`. Document IDs are stable per filename and chunk position, so reingestion updates existing chunks and removes chunks that no longer exist when a file is replaced. Retrieval filters by `RAG_MIN_RELEVANCE` (default `0.24`) and reranks candidates by lexical query overlap after vector similarity.
+
+The admin console uploads or replaces Markdown and text files. Embeddings for files larger than 256 KB run as a background job; job status appears in the Knowledge base view. Smaller uploads are indexed before the request completes. Ingest or refresh all documents from the command line with:
 
 ```sh
 HF_HOME="$PWD/.data/hf_cache" .venv311/bin/python scripts/ingest_docs.py
 ```
 
-`POST /api/kb/upload` accepts `.md` and `.txt` files with the `X-Admin-Token` value from `backend/.env`. Answers include source names for the UI to display.
+Answers include source names for the UI to display. The authenticated admin console supports uploads, replacements, and removals, and provides read-only customer, order, ticket, and conversation activity views.
 
 ## Database and API
 
@@ -71,7 +83,9 @@ Useful endpoints:
 - `GET /api/users/{user_id}/sessions` — conversation history
 - `POST /api/sessions`, `GET /api/sessions/{session_id}`, `DELETE /api/sessions/{session_id}`
 - `POST /api/chat` — grounded multilingual customer support
-- `POST /api/kb/upload` — admin-protected knowledge ingestion
+- `POST /api/admin/login` — create an admin bearer session
+- `GET /api/admin/overview`, `/users`, `/orders`, `/activity`, `/rag/files` — admin dashboard data
+- `POST /api/admin/rag/files`, `GET /api/admin/rag/jobs/{job_id}`, `DELETE /api/admin/rag/files/{file_name}` — admin-protected RAG document management
 - `POST /api/transcribe` and `POST /api/speak` — optional Addis voice endpoints
 
 Sample policy documents are fictional starter examples and must be reviewed and replaced with the company’s approved policies. The profile form identifies a customer but does not verify email/phone ownership; add a real authentication and verification provider before exposing account-specific support publicly. The local PostgreSQL setup is for development; use a managed PostgreSQL service, secret manager, backups, TLS, and operational monitoring for production.

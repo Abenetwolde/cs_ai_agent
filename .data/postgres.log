@@ -50,3 +50,11 @@
 2026-11-21 12:05:30.819 UTC [2484280] LOG:  checkpoint complete: wrote 9 buffers (0.1%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.903 s, sync=0.002 s, total=0.909 s; sync files=10, longest=0.002 s, average=0.001 s; distance=11 kB, estimate=16 kB; lsn=0/1C6A688, redo lsn=0/1C6A630
 2026-11-21 12:10:29.917 UTC [2484280] LOG:  checkpoint starting: time
 2026-11-21 12:10:30.023 UTC [2484280] LOG:  checkpoint complete: wrote 1 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.102 s, sync=0.001 s, total=0.107 s; sync files=2, longest=0.001 s, average=0.001 s; distance=3 kB, estimate=15 kB; lsn=0/1C6B590, redo lsn=0/1C6B538
+2026-11-21 12:25:29.200 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-21 12:25:30.110 UTC [2484280] LOG:  checkpoint complete: wrote 9 buffers (0.1%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.904 s, sync=0.003 s, total=0.910 s; sync files=10, longest=0.003 s, average=0.001 s; distance=16 kB, estimate=16 kB; lsn=0/1C6F5F8, redo lsn=0/1C6F5A0
+2026-11-21 12:30:29.205 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-21 12:30:29.812 UTC [2484280] LOG:  checkpoint complete: wrote 6 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.603 s, sync=0.002 s, total=0.608 s; sync files=7, longest=0.001 s, average=0.001 s; distance=14 kB, estimate=15 kB; lsn=0/1C730C0, redo lsn=0/1C73068
+2026-11-21 12:45:29.900 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-21 12:45:32.416 UTC [2484280] LOG:  checkpoint complete: wrote 25 buffers (0.2%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=2.509 s, sync=0.005 s, total=2.517 s; sync files=20, longest=0.004 s, average=0.001 s; distance=19 kB, estimate=19 kB; lsn=0/1C77D70, redo lsn=0/1C77D18
+2026-11-23 08:56:06.208 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-23 08:56:06.515 UTC [2484280] LOG:  checkpoint complete: wrote 3 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.302 s, sync=0.002 s, total=0.308 s; sync files=4, longest=0.001 s, average=0.001 s; distance=12 kB, estimate=18 kB; lsn=0/1C7AF08, redo lsn=0/1C7AEB0

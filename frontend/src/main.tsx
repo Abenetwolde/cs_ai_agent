@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ArrowUp, AudioLines, Bot, Check, ChevronDown, CircleHelp, Headphones, LifeBuoy, LogOut, Mic, Plus, RotateCcw, ShieldCheck, Sparkles, Volume2 } from 'lucide-react'
+import { AdminPortal } from './admin'
 import './style.css'
 
 type Language = 'en' | 'am' | 'om' | 'ti'
@@ -142,4 +143,4 @@ function App() {
 
 const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('Missing app root element.')
-createRoot(rootElement).render(<App />)
+createRoot(rootElement).render(location.pathname.startsWith('/admin') ? <AdminPortal/> : <App />)
