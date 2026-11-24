@@ -14,8 +14,25 @@ os.environ.setdefault('HF_HOME', str(PROJECT_ROOT / '.data' / 'hf_cache'))
 PERSIST_DIR = Path(os.getenv('CHROMA_PERSIST_DIR', PROJECT_ROOT / 'chroma_db'))
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
 MIN_RELEVANCE = float(os.getenv('RAG_MIN_RELEVANCE', '0.24'))
+SUPPORTED_EXTENSIONS = {'.md', '.txt', '.pdf'}
 _store = None
 _store_lock = threading.RLock()
+
+
+def extract_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {'.md', '.txt'}:
+        return path.read_text(encoding='utf-8')
+    if suffix == '.pdf':
+        from pypdf import PdfReader
+        reader = PdfReader(str(path))
+        text_parts = []
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text and page_text.strip():
+                text_parts.append(page_text.strip())
+        return '\n\n'.join(text_parts)
+    return ''
 
 
 def chunks(text: str, size: int = 1100, overlap: int = 120) -> list[str]:
@@ -45,9 +62,14 @@ def _documents(paths: Iterable[Path], source_names: dict[Path, str] | None = Non
     from langchain_core.documents import Document
     documents, ids = [], []
     for path in paths:
-        if path.suffix.lower() not in {'.md', '.txt'}:
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
-        content = path.read_text(encoding='utf-8')
+        try:
+            content = extract_text(path)
+        except Exception:
+            continue
+        if not content.strip():
+            continue
         source = (source_names or {}).get(path, path.name)
         for index, chunk in enumerate(chunks(content)):
             # Stable across content edits: Chroma upserts this slot when the file changes.
@@ -73,7 +95,7 @@ def ingest_paths(paths: Iterable[Path], source_names: dict[Path, str] | None = N
     with _store_lock:
         store = get_store()
         for path in paths:
-            if path.suffix.lower() not in {'.md', '.txt'}:
+            if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
             source = (source_names or {}).get(path, path.name)
             docs, ids = _documents([path], source_names)
@@ -130,9 +152,13 @@ def retrieve(query: str, k: int = 4) -> list[dict]:
     terms = set(re.findall(r'[\w-]{3,}', query.casefold()))
     matches = []
     for path in KB_DIR.glob('*'):
-        if path.suffix.lower() not in {'.md', '.txt'}:
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
-        for chunk in chunks(path.read_text(encoding='utf-8')):
+        try:
+            content = extract_text(path)
+        except Exception:
+            continue
+        for chunk in chunks(content):
             lowered = chunk.casefold()
             score = sum(1 for term in terms if term in lowered)
             # Avoid returning a chunk on one incidental word match.

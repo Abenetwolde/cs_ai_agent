@@ -28,7 +28,7 @@ load_dotenv(ROOT / '.env', override=True)
 from backend.agents import gemini_fallback_answer, orchestrate_tools, rewrite_search_query
 from backend.db import SessionLocal, engine, get_db
 from backend.models import Base, ChatMessage, ChatSession, Order, SupportTicket, User
-from backend.rag import KB_DIR, delete_source, ingest_paths, retrieve
+from backend.rag import KB_DIR, SUPPORTED_EXTENSIONS, delete_source, ingest_paths, retrieve
 from backend.seed import seed_demo_data
 
 logger = logging.getLogger('uvicorn.error')
@@ -110,6 +110,30 @@ def _verify_admin_password(password: str) -> bool:
         return hmac.compare_digest(_b64url(actual), digest)
     except (ValueError, TypeError):
         return False
+
+
+def _validate_uploaded_content(file_name: str, content: bytes) -> None:
+    suffix = Path(file_name).suffix.lower()
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(415, 'Upload a Markdown, text, or PDF file.')
+    if len(content) > 20_000_000:
+        raise HTTPException(413, 'File exceeds the 20 MB limit.')
+    if not content.strip():
+        raise HTTPException(422, 'The knowledge file is empty.')
+    if suffix == '.pdf':
+        import io
+        from pypdf import PdfReader
+        try:
+            reader = PdfReader(io.BytesIO(content))
+            if len(reader.pages) == 0:
+                raise HTTPException(422, 'The PDF file has no pages.')
+            text_found = any((page.extract_text() or '').strip() for page in reader.pages)
+            if not text_found:
+                raise HTTPException(422, 'Could not extract text from the PDF file (it may be scanned/image-only or empty).')
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(422, f'Invalid PDF file: {exc}')
 
 
 def _process_rag_upload(job_id: str, staging_path: Path, destination: Path) -> None:
@@ -338,7 +362,7 @@ def admin_activity(limit: int = 100, _: str = Depends(require_admin), db: Sessio
 def admin_rag_files(_: str = Depends(require_admin)):
     KB_DIR.mkdir(parents=True, exist_ok=True)
     files = [{'name': path.name, 'bytes': path.stat().st_size, 'updated_at': path.stat().st_mtime}
-             for path in sorted(KB_DIR.iterdir()) if path.is_file() and path.suffix.lower() in {'.md', '.txt'}]
+             for path in sorted(KB_DIR.iterdir()) if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS]
     with _RAG_JOBS_LOCK:
         jobs = [dict(job) for job in _RAG_JOBS.values()]
     jobs.sort(key=lambda job: job['id'], reverse=True)
@@ -349,13 +373,10 @@ def admin_rag_files(_: str = Depends(require_admin)):
 async def admin_upload_rag_file(file: UploadFile = File(...), background_tasks: BackgroundTasks = None,
                                _: str = Depends(require_admin)):
     file_name = Path(file.filename or '').name
-    if not file_name or file_name in {'.', '..'} or Path(file_name).suffix.lower() not in {'.md', '.txt'}:
-        raise HTTPException(415, 'Upload a Markdown or text file.')
+    if not file_name or file_name in {'.', '..'} or Path(file_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(415, 'Upload a Markdown, text, or PDF file.')
     content = await file.read(20_000_001)
-    if len(content) > 20_000_000:
-        raise HTTPException(413, 'File exceeds the 20 MB limit.')
-    if not content.strip():
-        raise HTTPException(422, 'The knowledge file is empty.')
+    _validate_uploaded_content(file_name, content)
     return _stage_rag_upload(file_name, content, background_tasks or BackgroundTasks())
 
 
@@ -371,7 +392,7 @@ def admin_rag_job(job_id: str, _: str = Depends(require_admin)):
 @app.delete('/api/admin/rag/files/{file_name}')
 def admin_delete_rag_file(file_name: str, _: str = Depends(require_admin)):
     safe_name = Path(file_name).name
-    if safe_name != file_name or Path(safe_name).suffix.lower() not in {'.md', '.txt'}:
+    if safe_name != file_name or Path(safe_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
         raise HTTPException(400, 'Invalid knowledge file name.')
     path = KB_DIR / safe_name
     if not path.is_file():
@@ -525,13 +546,10 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
 async def upload_knowledge(file: UploadFile = File(...), background_tasks: BackgroundTasks = None,
                           _: str = Depends(require_admin)):
     file_name = Path(file.filename or '').name
-    if not file_name or file_name in {'.', '..'} or Path(file_name).suffix.lower() not in {'.md', '.txt'}:
-        raise HTTPException(415, 'Upload a Markdown or text file.')
+    if not file_name or file_name in {'.', '..'} or Path(file_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(415, 'Upload a Markdown, text, or PDF file.')
     content = await file.read(20_000_001)
-    if len(content) > 20_000_000:
-        raise HTTPException(413, 'File exceeds the 20 MB limit.')
-    if not content.strip():
-        raise HTTPException(422, 'The knowledge file is empty.')
+    _validate_uploaded_content(file_name, content)
     return _stage_rag_upload(file_name, content, background_tasks or BackgroundTasks())
 
 

@@ -1,5 +1,5 @@
 from datetime import date, datetime, timezone
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -9,6 +9,19 @@ def utcnow():
 
 class Base(DeclarativeBase):
     pass
+
+
+class Product(Base):
+    __tablename__ = "products"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200), index=True)
+    category: Mapped[str] = mapped_column(String(80), index=True)
+    price: Mapped[float] = mapped_column(Float)
+    description: Mapped[str] = mapped_column(Text)
+    image_url: Mapped[str] = mapped_column(String(500))
+    stock: Mapped[int] = mapped_column(Integer, default=50)
+    rating: Mapped[float] = mapped_column(Float, default=4.8)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class User(Base):
@@ -50,6 +63,9 @@ class Order(Base):
     estimated_delivery: Mapped[date | None] = mapped_column(Date, nullable=True)
     carrier: Mapped[str | None] = mapped_column(String(80), nullable=True)
     items: Mapped[list] = mapped_column(JSON, default=list)
+    total_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    shipping_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 

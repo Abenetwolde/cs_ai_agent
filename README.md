@@ -62,9 +62,9 @@ The PostgreSQL cluster listens on `127.0.0.1:55432` and persists under `.data/po
 
 ## RAG knowledge
 
-Company-approved Markdown and text files belong in `backend/data/kb/`. The multilingual embedding model is `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; Chroma persists in `chroma_db/`. Document IDs are stable per filename and chunk position, so reingestion updates existing chunks and removes chunks that no longer exist when a file is replaced. Retrieval filters by `RAG_MIN_RELEVANCE` (default `0.24`) and reranks candidates by lexical query overlap after vector similarity.
+Company-approved Markdown, text, and PDF files belong in `backend/data/kb/`. The multilingual embedding model is `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; Chroma persists in `chroma_db/`. Document IDs are stable per filename and chunk position, so reingestion updates existing chunks and removes chunks that no longer exist when a file is replaced. Retrieval filters by `RAG_MIN_RELEVANCE` (default `0.24`) and reranks candidates by lexical query overlap after vector similarity.
 
-The admin console uploads or replaces Markdown and text files. Embeddings for files larger than 256 KB run as a background job; job status appears in the Knowledge base view. Smaller uploads are indexed before the request completes. Ingest or refresh all documents from the command line with:
+The admin console uploads or replaces Markdown, text, and PDF files. Embeddings for files larger than 256 KB run as a background job; job status appears in the Knowledge base view. Smaller uploads are indexed before the request completes. Ingest or refresh all documents from the command line with:
 
 ```sh
 HF_HOME="$PWD/.data/hf_cache" .venv311/bin/python scripts/ingest_docs.py
