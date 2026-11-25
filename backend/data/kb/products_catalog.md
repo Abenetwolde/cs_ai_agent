@@ -74,3 +74,4 @@ Welcome to the Addis AI Store official product catalog, warranty details, and cu
 - Delivery Fee: Free delivery on all orders over 2,000 ETB. Flat fee of 150 ETB for orders under 2,000 ETB.
 - Payment Methods: Telebirr, CBE Birr (Commercial Bank of Ethiopia), Credit/Debit Card, and Cash on Delivery.
 - Returns & Exchanges: 30-day return window for unused items in original packaging. Electronics include free repair or exchange within the 1-year warranty.
+

@@ -90,7 +90,10 @@ def make_tools(db: Session, user: User, chat_session: ChatSession) -> list[Struc
         if record:
             result = {'found': True, 'order_number': record.order_number, 'status': record.status,
                       'estimated_delivery': record.estimated_delivery.isoformat() if record.estimated_delivery else None,
-                      'carrier': record.carrier, 'items': record.items}
+                      'carrier': record.carrier, 'items': record.items,
+                      'total_amount': getattr(record, 'total_amount', 0.0),
+                      'payment_method': getattr(record, 'payment_method', None),
+                      'shipping_address': getattr(record, 'shipping_address', None)}
         results.append({'tool': 'lookup_user_orders', 'result': result})
         return result
 

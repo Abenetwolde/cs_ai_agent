@@ -27,7 +27,7 @@ ROOT = Path(__file__).parent
 load_dotenv(ROOT / '.env', override=True)
 from backend.agents import gemini_fallback_answer, orchestrate_tools, rewrite_search_query
 from backend.db import SessionLocal, engine, get_db
-from backend.models import Base, ChatMessage, ChatSession, Order, SupportTicket, User
+from backend.models import Base, ChatMessage, ChatSession, Order, Product, SupportTicket, User
 from backend.rag import KB_DIR, SUPPORTED_EXTENSIONS, delete_source, ingest_paths, retrieve
 from backend.seed import seed_demo_data
 
@@ -206,6 +206,14 @@ class AdminLoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class CreateOrderRequest(BaseModel):
+    user_id: str
+    items: list[dict]
+    total_amount: float = Field(ge=0)
+    payment_method: str = "Telebirr"
+    shipping_address: str = Field(min_length=3, max_length=500)
+
+
 def public_user(user: User) -> dict:
     return {'id': user.id, 'full_name': user.full_name, 'email': user.email, 'phone': user.phone,
             'preferred_language': user.preferred_language}
@@ -267,7 +275,10 @@ def deterministic_fallback(message: str, language: str, context: str, tool_resul
             return f"Your {label} on the support profile is {value}."
         if item.get('tool') == 'lookup_user_orders':
             if result.get('found'):
-                return f"Order {result['order_number']} is {result['status']}. Estimated delivery: {result.get('estimated_delivery') or 'not available yet'}. Carrier: {result.get('carrier') or 'not assigned'} ."
+                total_str = f" Total: {result['total_amount']:,.2f} ETB." if result.get('total_amount') else ""
+                item_names = [it.get('name') for it in result.get('items', []) if isinstance(it, dict) and it.get('name')]
+                items_str = f" Items: {', '.join(item_names)}." if item_names else ""
+                return f"Order {result['order_number']} is {result['status']}. Estimated delivery: {result.get('estimated_delivery') or 'pending'}. Carrier: {result.get('carrier') or 'Addis Express'}.{total_str}{items_str}"
             return f"I couldn’t find order {result.get('order_number')} on this customer profile. Please check the order number or contact support."
         if item.get('tool') == 'create_support_ticket':
             return f"I created support ticket {result.get('ticket_id')} with {result.get('priority')} priority."
@@ -431,6 +442,121 @@ def register_user(body: RegisterRequest, db: Session = Depends(get_db)):
         user.preferred_language = body.preferred_language
     db.commit()
     return {'user': public_user(user)}
+
+
+@app.get('/api/products')
+def list_products(category: str | None = None, search: str | None = None, db: Session = Depends(get_db)):
+    query = select(Product)
+    if category and category != 'All':
+        query = query.where(Product.category == category)
+    if search and search.strip():
+        term = f"%{search.strip().lower()}%"
+        query = query.where(func.lower(Product.name).like(term) | func.lower(Product.description).like(term))
+    query = query.order_by(Product.id)
+    items = db.scalars(query).all()
+    return {
+        'products': [
+            {
+                'id': p.id,
+                'name': p.name,
+                'category': p.category,
+                'price': p.price,
+                'description': p.description,
+                'image_url': p.image_url,
+                'stock': p.stock,
+                'rating': p.rating,
+            }
+            for p in items
+        ]
+    }
+
+
+@app.get('/api/products/{product_id}')
+def get_product(product_id: int, db: Session = Depends(get_db)):
+    p = db.get(Product, product_id)
+    if not p:
+        raise HTTPException(404, 'Product not found.')
+    return {
+        'product': {
+            'id': p.id,
+            'name': p.name,
+            'category': p.category,
+            'price': p.price,
+            'description': p.description,
+            'image_url': p.image_url,
+            'stock': p.stock,
+            'rating': p.rating,
+        }
+    }
+
+
+@app.post('/api/orders')
+def create_order(body: CreateOrderRequest, db: Session = Depends(get_db)):
+    user = db.get(User, body.user_id)
+    if not user:
+        raise HTTPException(404, 'Customer profile not found.')
+    if not body.items:
+        raise HTTPException(400, 'Order must contain at least one item.')
+
+    import random
+    from datetime import date, timedelta
+    order_number = f"ADDIS-{random.randint(2000, 9999)}"
+    while db.scalar(select(Order.id).where(Order.order_number == order_number)):
+        order_number = f"ADDIS-{random.randint(2000, 9999)}"
+
+    eta = date.today() + timedelta(days=2 if "Addis" in body.shipping_address else 3)
+    carrier = "Addis Express" if "Addis" in body.shipping_address else "Ethio Post"
+    order = Order(
+        order_number=order_number,
+        user_id=user.id,
+        status='processing',
+        estimated_delivery=eta,
+        carrier=carrier,
+        items=body.items,
+        total_amount=body.total_amount,
+        payment_method=body.payment_method,
+        shipping_address=body.shipping_address,
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    return {
+        'ok': True,
+        'order': {
+            'order_number': order.order_number,
+            'status': order.status,
+            'estimated_delivery': order.estimated_delivery.isoformat() if order.estimated_delivery else None,
+            'carrier': order.carrier,
+            'items': order.items,
+            'total_amount': order.total_amount,
+            'payment_method': order.payment_method,
+            'shipping_address': order.shipping_address,
+            'updated_at': order.updated_at.isoformat(),
+        }
+    }
+
+
+@app.get('/api/users/{user_id}/orders')
+def list_user_orders(user_id: str, db: Session = Depends(get_db)):
+    if not db.get(User, user_id):
+        raise HTTPException(404, 'User not found.')
+    orders = db.scalars(select(Order).where(Order.user_id == user_id).order_by(desc(Order.updated_at))).all()
+    return {
+        'orders': [
+            {
+                'order_number': o.order_number,
+                'status': o.status,
+                'estimated_delivery': o.estimated_delivery.isoformat() if o.estimated_delivery else None,
+                'carrier': o.carrier,
+                'items': o.items,
+                'total_amount': o.total_amount,
+                'payment_method': o.payment_method,
+                'shipping_address': o.shipping_address,
+                'updated_at': o.updated_at.isoformat(),
+            }
+            for o in orders
+        ]
+    }
 
 
 @app.get('/api/users/{user_id}/sessions')

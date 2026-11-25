@@ -32,3 +32,4 @@ def downgrade():
     op.drop_column('orders', 'payment_method')
     op.drop_column('orders', 'total_amount')
     op.drop_table('products')
+
