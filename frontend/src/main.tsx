@@ -36,6 +36,66 @@ function EcommerceApp() {
 
   const cartTotalItems = cart.reduce((sum, item) => sum + item.quantity, 0)
 
+  // Sync cart with backend database when user signs in or profile changes
+  React.useEffect(() => {
+    if (!profile?.id) return
+    let active = true
+    fetch(`/api/cart?user_id=${profile.id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (active && data && Array.isArray(data.items)) {
+          const mapped: CartItem[] = data.items.map((i: any) => ({
+            cart_item_id: i.cart_item_id,
+            product: {
+              id: i.product_id,
+              name: i.name,
+              category: i.category || 'Goods',
+              price: i.price,
+              description: '',
+              image_url: i.image_url,
+              stock: i.stock || 50,
+              rating: 4.8
+            },
+            quantity: i.quantity
+          }))
+          setCart(mapped)
+        }
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [profile?.id])
+
+  // Listen for cart changes triggered by AI chat or other components
+  React.useEffect(() => {
+    const handler = () => {
+      if (!profile?.id) return
+      fetch(`/api/cart?user_id=${profile.id}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data && Array.isArray(data.items)) {
+            const mapped: CartItem[] = data.items.map((i: any) => ({
+              cart_item_id: i.cart_item_id,
+              product: {
+                id: i.product_id,
+                name: i.name,
+                category: i.category || 'Goods',
+                price: i.price,
+                description: '',
+                image_url: i.image_url,
+                stock: i.stock || 50,
+                rating: 4.8
+              },
+              quantity: i.quantity
+            }))
+            setCart(mapped)
+          }
+        })
+        .catch(() => {})
+    }
+    window.addEventListener('addis-cart-updated', handler)
+    return () => window.removeEventListener('addis-cart-updated', handler)
+  }, [profile?.id])
+
   // Save cart to local storage
   React.useEffect(() => {
     localStorage.setItem('addis-store-cart', JSON.stringify(cart))

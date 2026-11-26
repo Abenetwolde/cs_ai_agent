@@ -20,6 +20,7 @@ export interface Product {
 }
 
 export interface CartItem {
+  cart_item_id?: number
   product: Product
   quantity: number
 }

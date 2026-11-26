@@ -1,19 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
+  AlertCircle,
+  ArrowRight,
   ArrowUp,
   AudioLines,
   Bot,
   Check,
   ChevronDown,
   CircleHelp,
+  CreditCard,
   Headphones,
   LifeBuoy,
   LogOut,
   Mic,
+  Package,
   Plus,
   RotateCcw,
   ShieldCheck,
+  ShoppingBag,
   Sparkles,
+  Trash2,
+  Truck,
   Volume2,
   X
 } from 'lucide-react'
@@ -30,6 +37,226 @@ const normalizeMessage = (message: any): SupportMessage => ({
   tools: message.metadata?.tools || []
 })
 const errorText = (error: unknown): string => error instanceof Error ? error.message : 'An unexpected error occurred.'
+
+function ReactToolCard({ tool, result, onAction }: { tool: string; result: any; onAction: (prompt: string) => void }) {
+  if (!result) return null
+
+  // 1. Search Products Catalog
+  if (tool === 'search_products') {
+    const products = result.products || []
+    if (products.length === 0) return null
+    return (
+      <div className="react-tool-card">
+        <div className="react-tool-header">
+          <span className="react-tool-badge"><ShoppingBag size={13} /> PRODUCTS ({products.length})</span>
+        </div>
+        <div className="react-product-grid">
+          {products.slice(0, 4).map((p: any) => (
+            <div key={p.id} className="react-product-chip">
+              {p.image_url && <img src={p.image_url} alt={p.name} className="react-product-thumb" />}
+              <span className="react-product-title">{p.name}</span>
+              <span className="react-product-price">{p.price?.toLocaleString()} ETB</span>
+              <button className="react-action-btn" onClick={() => onAction(`Add ${p.name} to my cart`)}>
+                <ShoppingBag size={12} /> Add to Cart
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  // 2. Product Details
+  if (tool === 'get_product_details') {
+    const p = result.product
+    if (!p) return null
+    return (
+      <div className="react-tool-card">
+        <div className="react-tool-header">
+          <span className="react-tool-badge"><Sparkles size={13} /> PRODUCT DETAILS</span>
+        </div>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          {p.image_url && <img src={p.image_url} alt={p.name} style={{ width: 75, height: 75, objectFit: 'cover', borderRadius: 8 }} />}
+          <div style={{ flex: 1 }}>
+            <strong style={{ fontSize: 13, display: 'block', color: '#182b20' }}>{p.name}</strong>
+            <span style={{ fontSize: 12, color: '#175f43', fontWeight: 700 }}>{p.price?.toLocaleString()} ETB</span>
+            <span style={{ fontSize: 11, color: '#68786c', display: 'block' }}>{p.category} · Stock: {p.stock}</span>
+          </div>
+          <button className="react-action-btn" onClick={() => onAction(`Add ${p.name} to my cart`)}>
+            <ShoppingBag size={12} /> Add
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // 3. View Cart
+  if (tool === 'view_cart') {
+    const items = result.items || []
+    return (
+      <div className="react-tool-card">
+        <div className="react-tool-header">
+          <span className="react-tool-badge"><ShoppingBag size={13} /> SHOPPING CART ({result.total_items || items.length} ITEMS)</span>
+        </div>
+        {items.length === 0 ? (
+          <p style={{ margin: '4px 0', fontSize: 12, color: '#657367' }}>Your shopping cart is currently empty.</p>
+        ) : (
+          <div className="react-cart-summary">
+            {items.map((i: any) => (
+              <div key={i.cart_item_id || i.product_id} className="react-cart-line">
+                <span>{i.name} (x{i.quantity})</span>
+                <strong>{i.line_total?.toLocaleString()} ETB</strong>
+              </div>
+            ))}
+            <div className="react-cart-totals">
+              <span>Grand Total {result.shipping === 0 ? '(Free Shipping)' : `(+${result.shipping} ETB shipping)`}</span>
+              <strong style={{ color: '#175f43' }}>{result.grand_total?.toLocaleString()} ETB</strong>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button className="react-action-btn" onClick={() => onAction('I want to checkout my cart')}>
+                <CreditCard size={12} /> Checkout Cart
+              </button>
+              <button className="react-action-btn secondary" onClick={() => onAction('Clear my cart')}>
+                <Trash2 size={12} /> Clear
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // 4. Add to Cart
+  if (tool === 'add_to_cart') {
+    return (
+      <div className="react-tool-card">
+        <div className="react-tool-header">
+          <span className="react-tool-badge" style={{ background: '#dcfce7', color: '#15803d' }}>
+            <Check size={13} /> ADDED TO CART
+          </span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <strong>+{result.quantity_added}x {result.product_name}</strong>
+            <span style={{ display: 'block', fontSize: 11, color: '#627065' }}>Total Cart: {result.total_items} items ({result.grand_total?.toLocaleString()} ETB)</span>
+          </div>
+          <button className="react-action-btn" onClick={() => onAction('View my cart')}>
+            View Cart
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // 5. Checkout Cart
+  if (tool === 'checkout_cart') {
+    if (!result.checked_out) return null
+    return (
+      <div className="react-tool-card" style={{ borderColor: '#86efac', background: '#f0fdf4' }}>
+        <div className="react-tool-header">
+          <span className="react-tool-badge" style={{ background: '#22c55e', color: '#fff' }}>
+            <Check size={13} /> ORDER PLACED #{result.order_number}
+          </span>
+        </div>
+        <div className="react-order-status-card">
+          <div>Estimated Delivery: <strong>{result.estimated_delivery}</strong> via <strong>{result.carrier}</strong></div>
+          <div>Total Paid: <strong style={{ color: '#175f43' }}>{result.total_amount?.toLocaleString()} ETB</strong></div>
+          <div style={{ fontSize: 11, color: '#57675a' }}>Delivery to: {result.shipping_address}</div>
+          <button className="react-action-btn" style={{ alignSelf: 'flex-start', marginTop: 6 }} onClick={() => onAction(`Check order ${result.order_number}`)}>
+            <Package size={12} /> Track Order
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // 6. Lookup User Orders
+  if (tool === 'lookup_user_orders') {
+    if (!result.found) return null
+    return (
+      <div className="react-tool-card">
+        <div className="react-tool-header">
+          <span className="react-tool-badge"><Package size={13} /> ORDER {result.order_number}</span>
+          <span className={`react-status-pill ${result.status?.toLowerCase()}`}>{result.status}</span>
+        </div>
+        <div className="react-order-status-card">
+          <div>ETA: <strong>{result.estimated_delivery || 'Calculating'}</strong> · Carrier: <strong>{result.carrier || 'Addis Express'}</strong></div>
+          <div>Total: <strong>{result.total_amount?.toLocaleString()} ETB</strong> ({result.items?.length || 0} items)</div>
+          {result.status === 'processing' && (
+            <button className="react-action-btn secondary" style={{ alignSelf: 'flex-start', marginTop: 6 }} onClick={() => onAction(`Cancel order ${result.order_number}`)}>
+              Cancel Order
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // 7. List My Orders
+  if (tool === 'list_my_orders') {
+    const orders = result.orders || []
+    if (orders.length === 0) return null
+    return (
+      <div className="react-tool-card">
+        <div className="react-tool-header">
+          <span className="react-tool-badge"><Package size={13} /> YOUR ORDERS ({orders.length})</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {orders.slice(0, 4).map((o: any) => (
+            <div key={o.order_number} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #f0f4ef' }}>
+              <div>
+                <strong>{o.order_number}</strong>
+                <span style={{ display: 'block', fontSize: 11, color: '#68786b' }}>{o.total_amount?.toLocaleString()} ETB · {o.items?.length || 0} items</span>
+              </div>
+              <span className={`react-status-pill ${o.status?.toLowerCase()}`}>{o.status}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  // 8. Admin Overview
+  if (tool === 'admin_get_overview') {
+    return (
+      <div className="react-tool-card" style={{ background: '#f8faf7' }}>
+        <div className="react-tool-header">
+          <span className="react-tool-badge"><Sparkles size={13} /> STORE OVERVIEW ANALYTICS</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginTop: 6 }}>
+          <div style={{ background: '#fff', padding: 8, borderRadius: 6, border: '1px solid #e7ede6' }}>
+            <span style={{ fontSize: 10, color: '#738174' }}>TOTAL REVENUE</span>
+            <strong style={{ display: 'block', fontSize: 14, color: '#175f43' }}>{result.total_revenue?.toLocaleString()} ETB</strong>
+          </div>
+          <div style={{ background: '#fff', padding: 8, borderRadius: 6, border: '1px solid #e7ede6' }}>
+            <span style={{ fontSize: 10, color: '#738174' }}>TOTAL ORDERS</span>
+            <strong style={{ display: 'block', fontSize: 14 }}>{result.total_orders}</strong>
+          </div>
+          <div style={{ background: '#fff', padding: 8, borderRadius: 6, border: '1px solid #e7ede6' }}>
+            <span style={{ fontSize: 10, color: '#738174' }}>CUSTOMERS</span>
+            <strong style={{ display: 'block', fontSize: 14 }}>{result.total_customers}</strong>
+          </div>
+          <div style={{ background: '#fff', padding: 8, borderRadius: 6, border: '1px solid #e7ede6' }}>
+            <span style={{ fontSize: 10, color: '#738174' }}>OPEN TICKETS</span>
+            <strong style={{ display: 'block', fontSize: 14, color: '#d97706' }}>{result.active_tickets}</strong>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Generic fallback for any other tool
+  return (
+    <div className="tool-result">
+      <div className="tool-label"><Check size={13} /> {tool?.replaceAll('_', ' ').toUpperCase()}</div>
+      {result?.order_number && <strong>Order {result.order_number}</strong>}
+      {result?.status && <span>Status: {result.status}</span>}
+      {result?.ticket_id && <span>Ticket: {result.ticket_id}</span>}
+      {result?.ticket_number && <span>Ticket: {result.ticket_number}</span>}
+      {result?.product_name && <span>Product: {result.product_name}</span>}
+    </div>
+  )
+}
 
 interface ChatProps {
   profile: Profile | null
@@ -158,6 +385,9 @@ export function ChatWidget({ profile, setProfile, language, setLanguage, initial
       if (!response.ok) throw new Error(data.detail || 'Support is temporarily unavailable.')
       setMessages(items => [...items, { role: 'assistant', content: normalizeText(data.reply), sources: data.sources || [], tools: data.tool_results || [] }])
       setHandoff(Boolean(data.handoff))
+      if (data.cart_updated) {
+        window.dispatchEvent(new CustomEvent('addis-cart-updated'))
+      }
       const history = await fetch(`/api/users/${profile.id}/sessions`).then(r => r.json()).catch(() => null)
       if (history?.sessions) setSessions(history.sessions)
     } catch (error) {
@@ -315,11 +545,14 @@ export function ChatWidget({ profile, setProfile, language, setLanguage, initial
               <h2>How can we help you?</h2>
               <p>Ask about order tracking, coffee roasting, warranty, returns, or product advice.<br />Answers are grounded directly in our store knowledge base.</p>
               <div className="suggestions">
-                <button onClick={() => send('Check my latest orders and shipping status')}>
-                  <span><ArrowUp size={15} /></span> Check my order status
+                <button onClick={() => send('What is in my shopping cart?')}>
+                  <span><ShoppingBag size={15} /></span> What is in my shopping cart?
                 </button>
-                <button onClick={() => send('What are the flavor notes and origin of Yirgacheffe coffee?')}>
-                  <span><RotateCcw size={15} /></span> Ask about Ethiopian coffees
+                <button onClick={() => send('Browse Ethiopian coffees and tech gadgets')}>
+                  <span><Sparkles size={15} /></span> Browse catalog products
+                </button>
+                <button onClick={() => send('Check my latest orders and shipping status')}>
+                  <span><Package size={15} /></span> Check my order status
                 </button>
                 <button onClick={() => send('What is the warranty on the Addis ANC Pro headphones?')}>
                   <span><CircleHelp size={15} /></span> Check warranty & returns
@@ -340,18 +573,9 @@ export function ChatWidget({ profile, setProfile, language, setLanguage, initial
                       <span>· {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'now'}</span>
                     </div>
                     <div className="bubble">
-                      {msg.content}
+                      <div className="bubble-text">{msg.content}</div>
                       {msg.tools?.map((entry, i) => (
-                        <div className="tool-result" key={i}>
-                          <div className="tool-label"><Check size={13} /> {entry.tool?.replaceAll('_', ' ').toUpperCase()}</div>
-                          {entry.result?.order_number && <strong>Order {entry.result.order_number}</strong>}
-                          {entry.result?.status && <span>Status: {entry.result.status}</span>}
-                          {entry.result?.estimated_delivery && <span>Estimated delivery: {entry.result.estimated_delivery}</span>}
-                          {entry.result?.carrier && <span>Carrier: {entry.result.carrier}</span>}
-                          {entry.result?.total_amount && <span>Total: {entry.result.total_amount} ETB</span>}
-                          {entry.result?.ticket_id && <span>Ticket: {entry.result.ticket_id} ({entry.result.priority || 'high'})</span>}
-                          {entry.result?.found === false && <span>Order was not found on your profile.</span>}
-                        </div>
+                        <ReactToolCard key={i} tool={entry.tool} result={entry.result} onAction={send} />
                       ))}
                     </div>
                     {(msg.sources || []).length > 0 && (

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { Activity, ArrowUpRight, BookOpen, Check, FileText, LogOut, Package, RefreshCw, ShieldCheck, Ticket, Upload, Users } from 'lucide-react'
+import { Activity, ArrowUpRight, BookOpen, Bot, Check, FileText, LogOut, Package, RefreshCw, Send, ShieldCheck, Sparkles, Ticket, Upload, Users } from 'lucide-react'
 
-type Tab = 'overview' | 'users' | 'orders' | 'activity' | 'knowledge'
+type Tab = 'overview' | 'users' | 'orders' | 'activity' | 'knowledge' | 'copilot'
 type Overview = { users: number; orders: number; tickets: number; open_tickets: number; conversations: number; escalated_conversations: number }
 type AdminUser = { id: string; full_name: string; email?: string | null; phone?: string | null; preferred_language: string; created_at: string; orders: number; tickets: number; conversations: number }
 type AdminOrder = { order_number: string; customer: string; email?: string | null; status: string; estimated_delivery?: string | null; carrier?: string | null; items: Array<{ name?: string; quantity?: number }> }
@@ -9,8 +9,8 @@ type ActivityItem = { type: string; at: string; customer: string; customer_email
 type RagFile = { name: string; bytes: number; updated_at: number }
 type RagJob = { id: string; file_name: string; status: string; chunks_indexed: number; error?: string }
 
-const labels: Record<Tab, string> = { overview: 'Overview', users: 'Customers', orders: 'Orders', activity: 'Activity', knowledge: 'Knowledge base' }
-const icons: Record<Tab, React.ReactNode> = { overview: <Activity size={17}/>, users: <Users size={17}/>, orders: <Package size={17}/>, activity: <Ticket size={17}/>, knowledge: <BookOpen size={17}/> }
+const labels: Record<Tab, string> = { overview: 'Overview', users: 'Customers', orders: 'Orders', activity: 'Activity', knowledge: 'Knowledge base', copilot: 'AI Copilot' }
+const icons: Record<Tab, React.ReactNode> = { overview: <Activity size={17}/>, users: <Users size={17}/>, orders: <Package size={17}/>, activity: <Ticket size={17}/>, knowledge: <BookOpen size={17}/>, copilot: <Bot size={17}/> }
 const date = (value?: string | number) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString() : '—'
 const prettySize = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`
 
@@ -108,9 +108,173 @@ export function AdminPortal() {
       {tab === 'orders' && <section className="admin-panel"><div className="admin-panel-heading"><div><h3>Order activity</h3><p>Orders linked to customer profiles</p></div></div><div className="admin-table-wrap"><table><thead><tr><th>ORDER</th><th>CUSTOMER</th><th>ITEMS</th><th>STATUS</th><th>DELIVERY</th><th>CARRIER</th></tr></thead><tbody>{orders.map(order => <tr key={order.order_number}><td><strong>{order.order_number}</strong></td><td>{order.customer}<small>{order.email || ''}</small></td><td>{order.items?.map(item => item.name).filter(Boolean).join(', ') || '—'}</td><td><span className={`admin-status ${order.status.toLowerCase()}`}>{order.status}</span></td><td>{order.estimated_delivery || '—'}</td><td>{order.carrier || '—'}</td></tr>)}</tbody></table>{orders.length === 0 && <EmptyState text="No orders have been recorded."/>}</div></section>}
       {tab === 'activity' && <section className="admin-panel"><div className="admin-panel-heading"><div><h3>Support activity</h3><p>Recent customer messages, assistant replies, and support tickets</p></div></div><ActivityTable rows={activity}/></section>}
       {tab === 'knowledge' && <><section className="admin-upload-panel"><div className="admin-upload-icon"><Upload size={21}/></div><div className="admin-upload-copy"><h3>Upload knowledge documents</h3><p>Add or replace a Markdown, text, or PDF file. Existing chunks for the same filename are updated and removed when no longer present.</p></div><label className={`admin-upload-button ${uploading ? 'disabled' : ''}`}><Upload size={15}/>{uploading ? 'Indexing…' : 'Choose a file'}<input type="file" accept=".md,.txt,.pdf,text/plain,application/pdf" disabled={uploading} onChange={event => { upload(event.target.files?.[0]); event.currentTarget.value = '' }}/></label><small>Markdown, TXT, or PDF · Up to 20 MB</small></section><section className="admin-panel"><div className="admin-panel-heading"><div><h3>Knowledge files</h3><p>{files.length} documents available to the support assistant</p></div></div>{jobs.length > 0 && <div className="admin-job-list">{jobs.slice(0, 5).map(job => <div className="admin-job" key={job.id}><div className={`admin-job-dot ${job.status}`}/><span><strong>{job.file_name}</strong><small>{job.status === 'complete' ? `${job.chunks_indexed} chunks indexed` : job.error || job.status}</small></span><small>{job.status}</small></div>)}</div>}<div className="admin-file-list">{files.map(file => <div className="admin-file-row" key={file.name}><div className="admin-file-icon"><FileText size={17}/></div><span><strong>{file.name}</strong><small>{prettySize(file.bytes)} · Updated {date(file.updated_at)}</small></span><button onClick={() => removeFile(file)}>Remove</button></div>)}{files.length === 0 && <EmptyState text="Upload your first support policy or FAQ document."/>}</div></section></>}
+      {tab === 'copilot' && <AdminCopilot token={token} onDataChanged={refresh} />}
       <footer className="admin-footer">Protected administration <span>·</span> Addis AI customer support</footer>
     </main>
   </div>
+}
+
+function AdminCopilot({ token, onDataChanged }: { token: string; onDataChanged: () => void }) {
+  const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string; tools?: any[] }>>([])
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const bottomRef = React.useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, busy])
+
+  async function send(text = input) {
+    const msg = text.trim()
+    if (!msg || busy) return
+    setInput('')
+    setBusy(true)
+    setMessages(prev => [...prev, { role: 'user', content: msg }])
+    try {
+      const res = await fetch('/api/admin/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ message: msg, language: 'en', session_id: sessionId })
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Failed to process admin chat.')
+      if (data.session_id) setSessionId(data.session_id)
+      setMessages(prev => [...prev, { role: 'assistant', content: data.reply, tools: data.tool_results }])
+      if (data.tool_results?.some((t: any) => t.tool?.startsWith('admin_update') || t.tool?.startsWith('admin_create'))) {
+        onDataChanged()
+      }
+    } catch (err: any) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message || 'Operation failed'}` }])
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="admin-copilot-container">
+      <div className="admin-copilot-messages">
+        {messages.length === 0 ? (
+          <div className="admin-copilot-welcome">
+            <div className="welcome-icon" style={{ margin: '0 auto 12px' }}><Bot size={28} /></div>
+            <h2>Admin AI Copilot</h2>
+            <p>
+              Execute operational commands, inspect real-time metrics, update order delivery statuses, adjust inventory stock/prices, and resolve support tickets directly via natural language grounded in PostgreSQL.
+            </p>
+            <div className="admin-copilot-prompts">
+              <button className="admin-copilot-prompt-btn" onClick={() => send('Give me an overview of total store revenue, orders and low stock items')}>
+                <Sparkles size={14} /> Overview of store revenue, orders & low stock
+              </button>
+              <button className="admin-copilot-prompt-btn" onClick={() => send('List all processing orders')}>
+                <Package size={14} /> List all processing orders
+              </button>
+              <button className="admin-copilot-prompt-btn" onClick={() => send('List low stock products with stock under 25')}>
+                <Activity size={14} /> List low stock products
+              </button>
+              <button className="admin-copilot-prompt-btn" onClick={() => send('List all open customer support tickets')}>
+                <Ticket size={14} /> List open support tickets
+              </button>
+            </div>
+          </div>
+        ) : (
+          messages.map((m, idx) => (
+            <div key={idx} className={`message-row ${m.role}`} style={{ display: 'flex', gap: 10 }}>
+              <div className={m.role === 'assistant' ? 'message-avatar' : 'user-avatar'}>
+                {m.role === 'assistant' ? <Bot size={16} /> : 'A'}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: '#7a857b', marginBottom: 4 }}>
+                  {m.role === 'assistant' ? 'Addis AI Copilot' : 'Administrator'}
+                </div>
+                <div className="bubble" style={{ background: m.role === 'user' ? '#175f43' : '#fff', color: m.role === 'user' ? '#fff' : '#192b1f', border: m.role === 'user' ? '0' : '1px solid #e5ebe4', padding: '12px 16px', borderRadius: 12 }}>
+                  <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{m.content}</div>
+                  {m.tools?.map((toolEntry: any, tIdx: number) => (
+                    <div key={tIdx} className="react-tool-card" style={{ marginTop: 10, background: '#fcfdfb' }}>
+                      <div className="react-tool-header">
+                        <span className="react-tool-badge"><Check size={12} /> {toolEntry.tool?.replaceAll('_', ' ').toUpperCase()}</span>
+                      </div>
+                      {toolEntry.tool === 'admin_get_overview' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 6 }}>
+                          <div style={{ background: '#fff', padding: 8, borderRadius: 6, border: '1px solid #e2eae1' }}>
+                            <span style={{ fontSize: 9, color: '#728173' }}>REVENUE</span>
+                            <strong style={{ display: 'block', fontSize: 13, color: '#175f43' }}>{toolEntry.result?.total_revenue?.toLocaleString()} ETB</strong>
+                          </div>
+                          <div style={{ background: '#fff', padding: 8, borderRadius: 6, border: '1px solid #e2eae1' }}>
+                            <span style={{ fontSize: 9, color: '#728173' }}>ORDERS</span>
+                            <strong style={{ display: 'block', fontSize: 13 }}>{toolEntry.result?.total_orders}</strong>
+                          </div>
+                          <div style={{ background: '#fff', padding: 8, borderRadius: 6, border: '1px solid #e2eae1' }}>
+                            <span style={{ fontSize: 9, color: '#728173' }}>CUSTOMERS</span>
+                            <strong style={{ display: 'block', fontSize: 13 }}>{toolEntry.result?.total_customers}</strong>
+                          </div>
+                          <div style={{ background: '#fff', padding: 8, borderRadius: 6, border: '1px solid #e2eae1' }}>
+                            <span style={{ fontSize: 9, color: '#728173' }}>OPEN TICKETS</span>
+                            <strong style={{ display: 'block', fontSize: 13, color: '#d97706' }}>{toolEntry.result?.active_tickets}</strong>
+                          </div>
+                        </div>
+                      )}
+                      {toolEntry.tool === 'admin_update_order_status' && (
+                        <div style={{ fontSize: 12, color: '#1b4d35' }}>
+                          Order <strong>{toolEntry.result?.order_number}</strong> updated to <span className="react-status-pill shipped">{toolEntry.result?.status}</span>
+                        </div>
+                      )}
+                      {toolEntry.tool === 'admin_update_product' && (
+                        <div style={{ fontSize: 12, color: '#1b4d35' }}>
+                          Product #{toolEntry.result?.product_id} (<strong>{toolEntry.result?.product_name}</strong>) updated: Price = {toolEntry.result?.new_price} ETB, Stock = {toolEntry.result?.new_stock}
+                        </div>
+                      )}
+                      {toolEntry.tool === 'admin_create_product' && (
+                        <div style={{ fontSize: 12, color: '#1b4d35' }}>
+                          Created new product #{toolEntry.result?.product_id} "<strong>{toolEntry.result?.product_name}</strong>" ({toolEntry.result?.price} ETB)
+                        </div>
+                      )}
+                      {toolEntry.tool === 'admin_update_ticket' && (
+                        <div style={{ fontSize: 12, color: '#1b4d35' }}>
+                          Ticket <strong>{toolEntry.result?.ticket_number}</strong> status changed to <span className="react-status-pill delivered">{toolEntry.result?.status}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+        {busy && (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div className="message-avatar"><Bot size={16} /></div>
+            <div className="bubble typing" style={{ padding: '10px 16px', background: '#fff', border: '1px solid #e5ebe4', borderRadius: 12 }}><i /><i /><i /></div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="admin-copilot-composer">
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              send()
+            }
+          }}
+          placeholder="Instruct Copilot e.g. 'Mark order ADDIS-1001 as shipped via Addis Express' or 'Update stock of product 1 to 50'..."
+        />
+        <button
+          className="admin-primary-button"
+          style={{ width: 'auto', padding: '0 18px', display: 'flex', alignItems: 'center', gap: 6 }}
+          disabled={!input.trim() || busy}
+          onClick={() => send()}
+        >
+          <Send size={15} /> Send
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function EmptyState({ text }: { text: string }) { return <div className="admin-empty"><FileText size={21}/><span>{text}</span></div> }

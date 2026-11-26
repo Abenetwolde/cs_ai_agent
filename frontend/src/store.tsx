@@ -130,7 +130,7 @@ export function StoreView({
     loadOrders()
   }, [profile?.id, activeTab])
 
-  // Cart operations
+  // Cart operations with database persistence
   const addToCart = (product: Product, qty: number = 1) => {
     setCart(prev => {
       const idx = prev.findIndex(item => item.product.id === product.id)
@@ -141,24 +141,56 @@ export function StoreView({
       }
       return [...prev, { product, quantity: qty }]
     })
+    if (profile?.id) {
+      fetch('/api/cart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: profile.id, product_id: product.id, quantity: qty })
+      })
+        .then(r => r.ok ? r.json() : null)
+        .then(() => window.dispatchEvent(new CustomEvent('addis-cart-updated')))
+        .catch(console.error)
+    }
   }
 
   const updateQuantity = (productId: number, delta: number) => {
+    const item = cart.find(i => i.product.id === productId)
+    const newQty = item ? item.quantity + delta : 0
     setCart(prev => {
       return prev
-        .map(item => {
-          if (item.product.id === productId) {
-            const newQty = item.quantity + delta
-            return newQty > 0 ? { ...item, quantity: newQty } : null
+        .map(i => {
+          if (i.product.id === productId) {
+            return newQty > 0 ? { ...i, quantity: newQty } : null
           }
-          return item
+          return i
         })
         .filter(Boolean) as CartItem[]
     })
+    if (profile?.id && item?.cart_item_id) {
+      if (newQty <= 0) {
+        fetch(`/api/cart/${item.cart_item_id}`, { method: 'DELETE' })
+          .then(() => window.dispatchEvent(new CustomEvent('addis-cart-updated')))
+          .catch(console.error)
+      } else {
+        fetch(`/api/cart/${item.cart_item_id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ quantity: newQty })
+        })
+          .then(() => window.dispatchEvent(new CustomEvent('addis-cart-updated')))
+          .catch(console.error)
+      }
+    }
   }
 
   const removeFromCart = (productId: number) => {
-    setCart(prev => prev.filter(item => item.product.id !== productId))
+    const item = cart.find(i => i.product.id === productId)
+    setCart(prev => prev.filter(i => i.product.id !== productId))
+    if (profile?.id && item?.cart_item_id) {
+      fetch(`/api/cart/${item.cart_item_id}`, { method: 'DELETE' })
+        .then(() => window.dispatchEvent(new CustomEvent('addis-cart-updated')))
+        .catch(console.error)
+    }
   }
 
   const subtotal = cart.reduce((sum, item) => sum + item.product.price * item.quantity, 0)
@@ -230,6 +262,10 @@ export function StoreView({
 
       setCompletedOrder(data.order)
       setCart([])
+      if (profile?.id) {
+        fetch(`/api/cart?user_id=${profile.id}`, { method: 'DELETE' }).catch(console.error)
+      }
+      window.dispatchEvent(new CustomEvent('addis-cart-updated'))
       setOrders(prev => [data.order, ...prev])
     } catch (e: any) {
       alert(e.message || 'Order failed')

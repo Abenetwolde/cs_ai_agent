@@ -78,3 +78,17 @@
 2026-11-24 13:26:29.521 UTC [2484280] LOG:  checkpoint complete: wrote 20 buffers (0.1%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=2.007 s, sync=0.002 s, total=2.014 s; sync files=21, longest=0.002 s, average=0.001 s; distance=32 kB, estimate=232 kB; lsn=0/1CD7698, redo lsn=0/1CD7640
 2026-11-24 13:31:27.618 UTC [2484280] LOG:  checkpoint starting: time
 2026-11-24 13:31:28.330 UTC [2484280] LOG:  checkpoint complete: wrote 7 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.703 s, sync=0.002 s, total=0.712 s; sync files=8, longest=0.001 s, average=0.001 s; distance=20 kB, estimate=211 kB; lsn=0/1CDC868, redo lsn=0/1CDC810
+2026-11-25 16:21:47.998 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-25 16:21:48.209 UTC [2484280] LOG:  checkpoint complete: wrote 2 buffers (0.0%), wrote 0 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.202 s, sync=0.001 s, total=0.211 s; sync files=2, longest=0.001 s, average=0.001 s; distance=6 kB, estimate=190 kB; lsn=0/1CDE290, redo lsn=0/1CDE238
+2026-11-26 15:42:07.383 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-26 15:42:07.995 UTC [2484280] LOG:  checkpoint complete: wrote 6 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.605 s, sync=0.002 s, total=0.613 s; sync files=7, longest=0.001 s, average=0.001 s; distance=18 kB, estimate=173 kB; lsn=0/1CE2AC0, redo lsn=0/1CE2A68
+2026-11-26 15:47:08.000 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-26 15:47:09.512 UTC [2484280] LOG:  checkpoint complete: wrote 15 buffers (0.1%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=1.506 s, sync=0.003 s, total=1.513 s; sync files=13, longest=0.003 s, average=0.001 s; distance=41 kB, estimate=160 kB; lsn=0/1CED2A8, redo lsn=0/1CED250
+2026-11-26 16:02:07.805 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-26 16:02:13.028 UTC [2484280] LOG:  checkpoint complete: wrote 52 buffers (0.3%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=5.215 s, sync=0.004 s, total=5.224 s; sync files=44, longest=0.003 s, average=0.001 s; distance=199 kB, estimate=199 kB; lsn=0/1D1F228, redo lsn=0/1D1F1D0
+2026-11-26 16:12:07.172 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-26 16:12:10.388 UTC [2484280] LOG:  checkpoint complete: wrote 32 buffers (0.2%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=3.210 s, sync=0.004 s, total=3.217 s; sync files=28, longest=0.002 s, average=0.001 s; distance=63 kB, estimate=186 kB; lsn=0/1D2EF00, redo lsn=0/1D2EE70
+2026-11-26 16:17:07.455 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-26 16:17:09.167 UTC [2484280] LOG:  checkpoint complete: wrote 17 buffers (0.1%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=1.706 s, sync=0.003 s, total=1.713 s; sync files=16, longest=0.002 s, average=0.001 s; distance=38 kB, estimate=171 kB; lsn=0/1D3A128, redo lsn=0/1D38728
+2026-11-26 16:22:07.243 UTC [2484280] LOG:  checkpoint starting: time
+2026-11-26 16:22:07.852 UTC [2484280] LOG:  checkpoint complete: wrote 6 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.603 s, sync=0.002 s, total=0.609 s; sync files=7, longest=0.001 s, average=0.001 s; distance=18 kB, estimate=156 kB; lsn=0/1D3D048, redo lsn=0/1D3CFF0

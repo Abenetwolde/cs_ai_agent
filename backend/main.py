@@ -27,8 +27,9 @@ ROOT = Path(__file__).parent
 load_dotenv(ROOT / '.env', override=True)
 from backend.agents import gemini_fallback_answer, orchestrate_tools, rewrite_search_query
 from backend.db import SessionLocal, engine, get_db
-from backend.models import Base, ChatMessage, ChatSession, Order, Product, SupportTicket, User
+from backend.models import Base, CartItem, ChatMessage, ChatSession, Order, Product, SupportTicket, User
 from backend.rag import KB_DIR, SUPPORTED_EXTENSIONS, delete_source, ingest_paths, retrieve
+from backend.react_agent import run_react_agent
 from backend.seed import seed_demo_data
 
 logger = logging.getLogger('uvicorn.error')
@@ -59,7 +60,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv('FRONTEND_ORIGINS', 'http://localhost:5174').split(','),
     allow_credentials=True,
-    allow_methods=['GET', 'POST', 'DELETE'],
+    allow_methods=['GET', 'POST', 'PUT', 'DELETE'],
     allow_headers=['Content-Type', 'Authorization'],
 )
 
@@ -98,6 +99,29 @@ def require_admin(authorization: str | None = Header(default=None)) -> str:
         return configured_email
     except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
         raise HTTPException(401, 'Admin session expired. Sign in again.', headers={'WWW-Authenticate': 'Bearer'})
+
+
+def _is_valid_admin_token(token: str | None) -> bool:
+    if not token:
+        return False
+    secret = os.getenv('ADMIN_SESSION_SECRET', '')
+    if not secret:
+        return False
+    try:
+        raw = token.strip()
+        if raw.startswith('Bearer '):
+            raw = raw[7:].strip()
+        payload, signature = raw.split('.', 1)
+        expected = _b64url(hmac.new(secret.encode(), payload.encode(), hashlib.sha256).digest())
+        if not hmac.compare_digest(signature, expected):
+            return False
+        decoded = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+        configured_email = os.getenv('ADMIN_EMAIL', '').strip().casefold()
+        if decoded.get('sub', '').casefold() != configured_email or decoded.get('exp', 0) < time.time():
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def _verify_admin_password(password: str) -> bool:
@@ -190,6 +214,23 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     message: str = Field(min_length=1, max_length=4000)
     language: Literal['en', 'am', 'om', 'ti'] = 'en'
+    admin_token: str | None = None
+
+
+class CartAddRequest(BaseModel):
+    user_id: str
+    product_id: int
+    quantity: int = Field(default=1, ge=1)
+
+
+class CartUpdateRequest(BaseModel):
+    quantity: int = Field(ge=0)
+
+
+class AdminChatRequest(BaseModel):
+    session_id: str | None = None
+    message: str = Field(min_length=1, max_length=4000)
+    language: Literal['en', 'am', 'om', 'ti'] = 'en'
 
 
 class SessionRequest(BaseModel):
@@ -253,8 +294,9 @@ def deterministic_fallback(message: str, language: str, context: str, tool_resul
             'ti': 'ትኬት ደገፍ ፈጢረ፣ እዚ ዝርርብ እዚ ሰብ ደገፍ ክከታተሎ ልኢኸዮ ኣለኹ።',
         }[language]
     for item in tool_results:
+        tool_name = item.get('tool')
         result = item.get('result') or {}
-        if item.get('tool') == 'lookup_my_profile':
+        if tool_name == 'lookup_my_profile':
             if not result.get('found'):
                 return {
                     'en': 'I could not find that information on your support profile.',
@@ -273,15 +315,85 @@ def deterministic_fallback(message: str, language: str, context: str, tool_resul
             label = labels.get(result.get('field'), 'profile information')
             value = result.get('value') or 'not provided'
             return f"Your {label} on the support profile is {value}."
-        if item.get('tool') == 'lookup_user_orders':
+        if tool_name == 'update_user_profile':
+            if result.get('updated'):
+                return f"Successfully updated your {result.get('field')} to {result.get('value')}."
+            return f"Could not update profile: {result.get('reason', 'Invalid value')}."
+        if tool_name == 'search_products':
+            products = result.get('products', [])
+            if not products:
+                return "No matching products were found in the catalog."
+            summary = ", ".join(f"{p['name']} ({p['price']:,.2f} ETB)" for p in products[:4])
+            return f"Found {result.get('count', len(products))} products: {summary}."
+        if tool_name == 'get_product_details':
+            if not result.get('found'):
+                return result.get('reason', 'Product not found.')
+            p = result.get('product', {})
+            return f"{p.get('name')} ({p.get('category')}) is {p.get('price', 0):,.2f} ETB with {p.get('stock')} in stock: {p.get('description')}"
+        if tool_name == 'view_cart':
+            items = result.get('items', [])
+            if not items:
+                return "Your shopping cart is currently empty."
+            items_str = ", ".join(f"{i['name']} (x{i['quantity']})" for i in items)
+            return f"Your cart contains {result.get('total_items', len(items))} item(s): {items_str}. Grand Total: {result.get('grand_total', 0):,.2f} ETB."
+        if tool_name == 'add_to_cart':
+            if result.get('added'):
+                return f"Added {result.get('quantity_added')}x '{result.get('product_name')}' to your cart! Total items: {result.get('total_items')} (Grand Total: {result.get('grand_total', 0):,.2f} ETB)."
+            return f"Could not add to cart: {result.get('reason', 'Insufficient stock or invalid product')}."
+        if tool_name == 'remove_from_cart':
+            if result.get('removed'):
+                return f"Updated cart! {result.get('product_name')} updated/removed. Total items: {result.get('total_items')} (Grand Total: {result.get('grand_total', 0):,.2f} ETB)."
+            return f"Could not remove item: {result.get('reason', 'Item not in cart')}."
+        if tool_name == 'clear_cart':
+            return "Your shopping cart has been emptied."
+        if tool_name == 'checkout_cart':
+            if result.get('checked_out'):
+                return f"Order placed successfully! Your order number is {result.get('order_number')}. Total: {result.get('total_amount', 0):,.2f} ETB. Estimated delivery: {result.get('estimated_delivery')} via {result.get('carrier')}."
+            return f"Checkout failed: {result.get('reason', 'Could not process order')}."
+        if tool_name == 'lookup_user_orders':
             if result.get('found'):
                 total_str = f" Total: {result['total_amount']:,.2f} ETB." if result.get('total_amount') else ""
                 item_names = [it.get('name') for it in result.get('items', []) if isinstance(it, dict) and it.get('name')]
                 items_str = f" Items: {', '.join(item_names)}." if item_names else ""
                 return f"Order {result['order_number']} is {result['status']}. Estimated delivery: {result.get('estimated_delivery') or 'pending'}. Carrier: {result.get('carrier') or 'Addis Express'}.{total_str}{items_str}"
             return f"I couldn’t find order {result.get('order_number')} on this customer profile. Please check the order number or contact support."
-        if item.get('tool') == 'create_support_ticket':
+        if tool_name == 'list_my_orders':
+            orders = result.get('orders', [])
+            if not orders:
+                return "You have no past orders on file."
+            orders_str = ", ".join(f"{o['order_number']} ({o['status']}, {o['total_amount']:,.2f} ETB)" for o in orders[:4])
+            return f"You have {len(orders)} order(s): {orders_str}."
+        if tool_name == 'cancel_order':
+            if result.get('cancelled'):
+                return f"Order {result.get('order_number')} has been cancelled."
+            return f"Could not cancel order: {result.get('reason', 'Order is not in processing state')}."
+        if tool_name == 'create_support_ticket':
             return f"I created support ticket {result.get('ticket_id')} with {result.get('priority')} priority."
+        # Admin tools deterministic summaries
+        if tool_name == 'admin_get_overview':
+            return f"Store Overview: {result.get('total_customers')} customers, {result.get('total_orders')} orders, {result.get('total_revenue', 0):,.2f} ETB revenue, {result.get('active_tickets')} active tickets, {result.get('low_stock_products_count')} low stock products."
+        if tool_name == 'admin_list_orders':
+            return f"Found {result.get('count', 0)} orders matching filter."
+        if tool_name == 'admin_update_order_status':
+            if result.get('updated'):
+                return f"Order {result.get('order_number')} status successfully updated to {result.get('status')}."
+            return f"Failed to update order: {result.get('reason')}."
+        if tool_name == 'admin_list_products':
+            return f"Found {result.get('count', 0)} products in catalog."
+        if tool_name == 'admin_update_product':
+            if result.get('updated'):
+                return f"Product #{result.get('product_id')} ({result.get('product_name')}) updated: Price={result.get('new_price')} ETB, Stock={result.get('new_stock')}."
+            return f"Failed to update product: {result.get('reason')}."
+        if tool_name == 'admin_create_product':
+            if result.get('created'):
+                return f"Product #{result.get('product_id')} '{result.get('product_name')}' created successfully."
+            return f"Failed to create product: {result.get('reason')}."
+        if tool_name == 'admin_list_tickets':
+            return f"Found {result.get('count', 0)} support tickets."
+        if tool_name == 'admin_update_ticket':
+            if result.get('updated'):
+                return f"Support ticket {result.get('ticket_number')} status updated to {result.get('status')}."
+            return f"Failed to update ticket: {result.get('reason')}."
     if context:
         source_text = context.split('\n\n')[0]
         if language == 'en':
@@ -599,8 +711,102 @@ def delete_session(session_id: str, user_id: str, db: Session = Depends(get_db))
     return {'ok': True}
 
 
+def _get_cart_response(db: Session, user_id: str) -> dict:
+    items_db = db.execute(
+        select(CartItem, Product).join(Product, Product.id == CartItem.product_id)
+        .where(CartItem.user_id == user_id).order_by(CartItem.id)
+    ).all()
+    items = []
+    subtotal = 0.0
+    for ci, p in items_db:
+        line_total = round(p.price * ci.quantity, 2)
+        subtotal += line_total
+        items.append({
+            'cart_item_id': ci.id,
+            'product_id': p.id,
+            'name': p.name,
+            'category': p.category,
+            'price': p.price,
+            'quantity': ci.quantity,
+            'line_total': line_total,
+            'image_url': p.image_url,
+            'stock': p.stock
+        })
+    shipping = 0.0 if (subtotal == 0 or subtotal >= 2000.0) else 150.0
+    return {
+        'items': items,
+        'subtotal': round(subtotal, 2),
+        'shipping': shipping,
+        'grand_total': round(subtotal + shipping, 2),
+        'total_items': sum(i['quantity'] for i in items)
+    }
+
+
+@app.get('/api/cart')
+def get_cart(user_id: str, db: Session = Depends(get_db)):
+    if not db.get(User, user_id):
+        raise HTTPException(404, 'User not found.')
+    return _get_cart_response(db, user_id)
+
+
+@app.post('/api/cart')
+def add_to_cart_endpoint(body: CartAddRequest, db: Session = Depends(get_db)):
+    user = db.get(User, body.user_id)
+    if not user:
+        raise HTTPException(404, 'User not found.')
+    product = db.get(Product, body.product_id)
+    if not product:
+        raise HTTPException(404, 'Product not found.')
+    if product.stock < body.quantity:
+        raise HTTPException(400, f'Insufficient stock. Only {product.stock} available.')
+    ci = db.scalar(select(CartItem).where(CartItem.user_id == user.id, CartItem.product_id == product.id))
+    if ci:
+        ci.quantity += body.quantity
+    else:
+        ci = CartItem(user_id=user.id, product_id=product.id, quantity=body.quantity)
+        db.add(ci)
+    db.commit()
+    return _get_cart_response(db, user.id)
+
+
+@app.put('/api/cart/{cart_item_id}')
+def update_cart_item(cart_item_id: int, body: CartUpdateRequest, db: Session = Depends(get_db)):
+    ci = db.get(CartItem, cart_item_id)
+    if not ci:
+        raise HTTPException(404, 'Cart item not found.')
+    uid = ci.user_id
+    if body.quantity <= 0:
+        db.delete(ci)
+    else:
+        ci.quantity = body.quantity
+    db.commit()
+    return _get_cart_response(db, uid)
+
+
+@app.delete('/api/cart/{cart_item_id}')
+def remove_cart_item(cart_item_id: int, db: Session = Depends(get_db)):
+    ci = db.get(CartItem, cart_item_id)
+    if not ci:
+        raise HTTPException(404, 'Cart item not found.')
+    uid = ci.user_id
+    db.delete(ci)
+    db.commit()
+    return _get_cart_response(db, uid)
+
+
+@app.delete('/api/cart')
+def clear_cart_endpoint(user_id: str, db: Session = Depends(get_db)):
+    if not db.get(User, user_id):
+        raise HTTPException(404, 'User not found.')
+    items = db.scalars(select(CartItem).where(CartItem.user_id == user_id)).all()
+    for item in items:
+        db.delete(item)
+    db.commit()
+    return _get_cart_response(db, user_id)
+
+
 @app.post('/api/chat')
-def chat(body: ChatRequest, db: Session = Depends(get_db)):
+def chat(body: ChatRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     user = ensure_user(db, body.user_id)
     chat_session = ensure_session(db, user, body.session_id)
     previous = db.scalars(select(ChatMessage).where(ChatMessage.session_id == chat_session.id,
@@ -611,11 +817,25 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
     db.flush()
     chat_session.updated_at = user_message.created_at
 
+    # Role-based admin check
+    is_admin = _is_valid_admin_token(authorization) or _is_valid_admin_token(body.admin_token)
+
     rewritten = rewrite_search_query(body.message, history)
     docs = retrieve(rewritten, k=4)
     context = '\n\n'.join(f"[{doc['source']}] {doc['text']}" for doc in docs)
     sources = list(dict.fromkeys(doc['source'] for doc in docs))
-    tool_results, escalation_summary = orchestrate_tools(db, user, chat_session, body.message, history, context)
+
+    # Run LangGraph ReAct conversational commerce agent
+    tool_results, escalation_summary, cart_updated, react_reply = run_react_agent(
+        db=db,
+        user=user,
+        chat_session=chat_session,
+        message=body.message,
+        history=history,
+        context=context,
+        is_admin=is_admin
+    )
+
     if escalation_summary:
         chat_session.status = 'escalated'
         chat_session.escalation_summary = escalation_summary
@@ -631,13 +851,13 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
         f"COMPANY KNOWLEDGE:\n{context or 'No matching approved documents were found.'}\n\n"
         f"TOOL RESULTS:\n{tool_results or 'No database actions were executed.'}")
     sdk_language = body.language if body.language in {'am', 'om', 'ti'} else 'am'
-    reply = None
-    active_model = 'local-fallback'
-    profile_result = next((entry for entry in tool_results if entry.get('tool') == 'lookup_my_profile'), None)
-    if profile_result:
-        # Give this chat's scoped database result directly so the language model
-        # cannot refuse the lookup or fabricate account details.
-        reply = deterministic_fallback(body.message, body.language, context, tool_results, False)
+    reply = react_reply
+    active_model = 'langgraph-react' if reply else 'local-fallback'
+
+    if not reply:
+        profile_result = next((entry for entry in tool_results if entry.get('tool') == 'lookup_my_profile'), None)
+        if profile_result:
+            reply = deterministic_fallback(body.message, body.language, context, tool_results, False)
     sdk = addis_client()
     if not reply and sdk is not None:
         addis_history = [{'role': m['role'], 'content': m['content']} for m in history[-14:]]
@@ -663,9 +883,99 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
     chat_session.updated_at = assistant_message.created_at
     db.commit()
     tickets = [item['result'] for item in tool_results if item.get('tool') in {'create_support_ticket', 'escalate_to_human'}]
-    return {'user_id': user.id, 'session_id': chat_session.id, 'reply': str(reply), 'handoff': bool(escalation_summary),
-            'summary': escalation_summary, 'sources': sources, 'tool_results': tool_results, 'tickets': tickets,
-            'active_model': assistant_message.metadata_json['active_model']}
+    return {
+        'user_id': user.id,
+        'session_id': chat_session.id,
+        'reply': str(reply),
+        'handoff': bool(escalation_summary),
+        'summary': escalation_summary,
+        'sources': sources,
+        'tool_results': tool_results,
+        'cart_updated': cart_updated,
+        'tickets': tickets,
+        'active_model': assistant_message.metadata_json['active_model']
+    }
+
+
+@app.post('/api/admin/chat')
+def admin_chat_endpoint(
+    body: AdminChatRequest,
+    admin_email: str = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    admin_user = db.scalar(select(User).where(User.email == admin_email))
+    if not admin_user:
+        admin_user = User(
+            id='admin-system-account',
+            full_name='Store Administrator',
+            email=admin_email,
+            preferred_language=body.language
+        )
+        db.add(admin_user)
+        db.flush()
+
+    chat_session = ensure_session(db, admin_user, body.session_id)
+    previous = db.scalars(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == chat_session.id, ChatMessage.sender.in_(['user', 'assistant']))
+        .order_by(desc(ChatMessage.id))
+        .limit(18)
+    ).all()
+    history = [{'role': m.sender, 'content': m.content} for m in reversed(previous)]
+    user_message = ChatMessage(session_id=chat_session.id, sender='user', content=body.message, metadata_json={'is_admin': True})
+    db.add(user_message)
+    db.flush()
+    chat_session.updated_at = user_message.created_at
+
+    rewritten = rewrite_search_query(body.message, history)
+    docs = retrieve(rewritten, k=4)
+    context = '\n\n'.join(f"[{doc['source']}] {doc['text']}" for doc in docs)
+    sources = list(dict.fromkeys(doc['source'] for doc in docs))
+
+    tool_results, escalation_summary, cart_updated, react_reply = run_react_agent(
+        db=db,
+        user=admin_user,
+        chat_session=chat_session,
+        message=body.message,
+        history=history,
+        context=context,
+        is_admin=True
+    )
+
+    for result in tool_results:
+        db.add(ChatMessage(session_id=chat_session.id, sender='tool', content=str(result.get('tool', 'tool')), metadata_json=result))
+
+    reply = react_reply
+    active_model = 'langgraph-react-admin'
+    if not reply:
+        reply = gemini_fallback_answer(body.message, body.language, context, tool_results)
+        if reply:
+            active_model = 'gemini-fallback'
+        else:
+            reply = deterministic_fallback(body.message, body.language, context, tool_results, False)
+
+    assistant_message = ChatMessage(
+        session_id=chat_session.id,
+        sender='assistant',
+        content=str(reply),
+        metadata_json={'sources': sources, 'tools': tool_results, 'active_model': active_model, 'is_admin': True}
+    )
+    db.add(assistant_message)
+    db.flush()
+    chat_session.updated_at = assistant_message.created_at
+    db.commit()
+
+    return {
+        'user_id': admin_user.id,
+        'session_id': chat_session.id,
+        'reply': str(reply),
+        'handoff': False,
+        'summary': None,
+        'sources': sources,
+        'tool_results': tool_results,
+        'cart_updated': cart_updated,
+        'active_model': active_model
+    }
 
 
 @app.post('/api/kb/upload')
